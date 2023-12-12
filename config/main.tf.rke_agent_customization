@@ -1,0 +1,102 @@
+terraform {
+  required_providers {
+    rancher2 = {
+      source  = "terraform.local/local/rancher2"
+      version = "1.0.0"
+    }
+  }
+}
+
+provider "rancher2" {
+  api_url   = var.rancher_api_url
+  token_key = var.rancher_admin_bearer_token
+  insecure  = true
+}
+
+data "rancher2_cloud_credential" "rancher2_cloud_credential" {
+  name = var.cloud_credential_name
+}
+
+resource "rancher2_cluster" "ablender-rke" {
+  name = var.rke_cluster_name
+  rke_config {
+    kubernetes_version = "v1.26.4-rancher2-1"
+    network {
+      plugin = var.rke_network_plugin
+    }
+    services {
+      etcd {
+        creation = "6h"
+        retention = "72h"
+      }
+    }
+    ingress {
+      default_backend = "false"
+    }
+  }
+  cluster_auth_endpoint {}
+  cluster_agent_deployment_customization {
+    append_tolerations {
+      effect = "NoSchedule"
+      key    = "tolerate/control-plane"
+      value  = "true"
+}
+    override_affinity = <<EOF
+{
+  "nodeAffinity": {
+    "requiredDuringSchedulingIgnoredDuringExecution": {
+      "nodeSelectorTerms": [{
+        "matchExpressions": [{
+          "key": "beta.kubernetes.io/os",
+          "operator": "NotIn",
+          "values": [
+            "windows"
+          ]
+        }]
+      }]
+    }
+  }
+}
+EOF
+    override_resource_requirements {
+      cpu_limit      = "800m"
+      cpu_request    = "250m"
+      memory_limit   = "800Mi"
+      memory_request = "250Mi"
+    }
+  }
+  fleet_agent_deployment_customization {
+    append_tolerations {
+      effect = "NoSchedule"
+      key    = "tolerate/worker"
+      value  = "true"
+    }
+  }
+}
+
+resource "rancher2_node_template" "rancher2_node_template" {
+  name = var.rke_node_template_name
+  amazonec2_config {
+    access_key     = var.aws_access_key
+    secret_key     = var.aws_secret_key
+    region         = var.aws_region
+    ami            = var.aws_ami
+    security_group = [var.aws_security_group_name]
+    subnet_id      = var.aws_subnet_id
+    vpc_id         = var.aws_vpc_id
+    zone           = var.aws_zone_letter
+    root_size      = var.aws_root_size
+    instance_type  = var.aws_instance_type
+  }
+}
+
+resource "rancher2_node_pool" "pool1" {
+  cluster_id       = rancher2_cluster.ablender-rke.id
+  name             = "pool1"
+  hostname_prefix  = "tf-pool1-"
+  node_template_id = rancher2_node_template.rancher2_node_template.id
+  quantity         = 1
+  control_plane    = true
+  etcd             = true 
+  worker           = true 
+}

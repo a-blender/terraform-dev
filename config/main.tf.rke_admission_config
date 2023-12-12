@@ -1,0 +1,110 @@
+terraform {
+  required_providers {
+    rancher2 = {
+      source  = "terraform.local/local/rancher2"
+      version = "1.0.0"
+    }
+  }
+}
+
+provider "rancher2" {
+  api_url   = var.rancher_api_url
+  token_key = var.rancher_admin_bearer_token
+  insecure  = true
+}
+
+data "rancher2_cloud_credential" "rancher2_cloud_credential" {
+  name = var.cloud_credential_name
+}
+
+resource "rancher2_cluster" "ablender-rke" {
+  name = var.rke_cluster_name
+  rke_config {
+    kubernetes_version = "v1.26.7-rancher1-1"
+    network {
+      plugin = var.rke_network_plugin
+    }
+    services {
+      kube_api {
+        admission_configuration = <<EOF
+apiVersion: apiserver.config.k8s.io/v1
+kind: AdmissionConfiguration
+plugins:
+- configuration:
+    apiVersion: pod-security.admission.config.k8s.io/v1
+    defaults:
+      audit: restricted
+      audit-version: latest
+      enforce: restricted
+      enforce-version: latest
+      warn: restricted
+      warn-version: latest
+    exemptions:
+      namespaces:
+      - kube-system
+    kind: PodSecurityConfiguration
+  name: PodSecurity
+  path: ""
+EOF
+      }
+      etcd {
+        creation = "6h"
+        retention = "72h"
+      }
+    }
+    ingress {
+      default_backend = "false"
+    }
+  }
+  cluster_auth_endpoint {}
+}
+
+resource "rancher2_node_template" "rancher2_node_template" {
+  name = var.rke_node_template_name
+  engine_install_url = var.engine_install_url
+  amazonec2_config {
+    access_key     = var.aws_access_key
+	  secret_key     = var.aws_secret_key
+	  region         = var.aws_region
+          ami            = var.aws_ami
+	  security_group = [var.aws_security_group_name]
+	  subnet_id      = var.aws_subnet_id
+	  vpc_id         = var.aws_vpc_id
+	  zone           = var.aws_zone_letter
+	  root_size      = var.aws_root_size
+	  instance_type  = var.aws_instance_type
+  }
+}
+
+resource "rancher2_node_pool" "pool1" {
+  cluster_id       = rancher2_cluster.ablender-rke.id
+  name             = "pool1"
+  hostname_prefix  = "tf-pool1-"
+  node_template_id = rancher2_node_template.rancher2_node_template.id
+  quantity         = 1
+  control_plane    = false
+  etcd             = true 
+  worker           = false 
+}
+
+resource "rancher2_node_pool" "pool2" {
+  cluster_id       = rancher2_cluster.ablender-rke.id
+  name             = "pool2"
+  hostname_prefix  = "tf-pool2-"
+  node_template_id = rancher2_node_template.rancher2_node_template.id
+  quantity         = 1
+  control_plane    = true
+  etcd             = false 
+  worker           = false 
+}
+
+resource "rancher2_node_pool" "pool3" {
+  cluster_id       = rancher2_cluster.ablender-rke.id
+  name             = "pool3"
+  hostname_prefix  = "tf-pool3-"
+  node_template_id = rancher2_node_template.rancher2_node_template.id
+  quantity         = 1
+  control_plane    = false
+  etcd             = false 
+  worker           = true 
+}
