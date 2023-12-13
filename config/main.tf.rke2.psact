@@ -1,0 +1,98 @@
+locals {
+  version = "rke2"  // k3s for K3s clusters
+  rancher_psact_mount_path = "/etc/rancher/${local.version}/config/rancher-psact.yaml"
+  kube_apiserver_arg = var.default_psa_template != null && var.default_psa_template != "" ? ["admission-control-config-file=${local.rancher_psact_mount_path}"] : []
+}
+
+terraform {
+  required_providers {
+    rancher2 = {
+      source = "terraform.local/local/rancher2"
+      version = "1.0.0"
+    }
+  }
+}
+
+provider "rancher2" {
+  api_url   = var.rancher_api_url 
+  token_key = var.rancher_admin_bearer_token
+  insecure  = true
+}
+
+# Create amazonec2 cloud credential
+resource "rancher2_cloud_credential" "foo" {
+  name = "foo"
+  amazonec2_credential_config {
+    access_key = var.aws_access_key
+    secret_key = var.aws_secret_key
+  }
+}
+
+# Create amazonec2 machine config v2
+resource "rancher2_machine_config_v2" "foo" {
+  generate_name = "ablender-machine"
+  amazonec2_config {
+    ami            = var.aws_ami
+    region         = var.aws_region
+    security_group = [var.aws_security_group_name]
+    subnet_id      = var.aws_subnet_id
+    vpc_id         = var.aws_vpc_id
+    zone           = var.aws_zone_letter
+    root_size      = var.aws_root_size
+  }
+}
+
+# Create PSACT
+resource "rancher2_pod_security_admission_configuration_template" "ablender-psact" {
+  name = var.default_psa_template
+  description = "This is my custom Rancher restricted PSACT"
+  defaults {
+    audit = "restricted"
+    audit_version = "latest"
+    enforce = "restricted"
+    enforce_version = "latest"
+    warn = "restricted"
+    warn_version = "latest"
+  }
+  exemptions {
+    usernames = ["user1","user2"]
+    runtime_classes = ["class1","class2"]
+    namespaces = ["ingress-nginx","kube-system"]
+  }
+}
+
+# Create a new rancher v2 amazonec2 RKE2 Cluster v2
+resource "rancher2_cluster_v2" "ablender-rke2" {
+  lifecycle {
+    ignore_changes = [
+      # Ignore changes to machine selector files because Rancher webhook 
+      # manages it.
+      rke_config["machine_selector_files"],
+    ]
+  }
+  name = var.rke2_cluster_name
+  kubernetes_version = "v1.27.7+rke2r1"
+  enable_network_policy = false
+  default_cluster_role_for_project_members = "user"
+  default_pod_security_admission_configuration_template_name = var.default_psa_template
+  rke_config {
+    machine_global_config = yamlencode({
+      cni = "calico"
+      disable-kube-proxy = false
+      etcd-expose-metrics = false
+      kube-apiserver-arg = local.kube_apiserver_arg
+    })
+    machine_pools {
+      name = "pool1"
+      cloud_credential_secret_name = rancher2_cloud_credential.foo.id
+      control_plane_role = true
+      etcd_role = true
+      worker_role = true
+      quantity = 1
+      machine_config {
+        kind = rancher2_machine_config_v2.foo.kind
+        name = rancher2_machine_config_v2.foo.name
+      }
+    }
+  }
+}
